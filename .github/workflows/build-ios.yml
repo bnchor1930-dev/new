@@ -21,28 +21,6 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Create Default Assets (with validation)
-        run: |
-          mkdir -p assets
-
-          download_and_check() {
-            local url=$1
-            local dest=$2
-            echo "Downloading $url to $dest..."
-            curl -L -o "$dest" "$url" || { echo "Download failed for $url"; exit 1; }
-            if [ ! -s "$dest" ]; then
-              echo "Downloaded file is empty: $dest"
-              exit 1
-            fi
-            file "$dest" | grep -q "PNG image" || { echo "Invalid image format: $dest"; exit 1; }
-            echo "OK: $dest"
-          }
-
-          download_and_check "https://raw.githubusercontent.com/expo/expo/main/templates/expo-template-blank/assets/icon.png" "assets/icon.png"
-          download_and_check "https://raw.githubusercontent.com/expo/expo/main/templates/expo-template-blank/assets/splash.png" "assets/splash.png"
-          download_and_check "https://raw.githubusercontent.com/expo/expo/main/templates/expo-template-blank/assets/adaptive-icon.png" "assets/adaptive-icon.png"
-          download_and_check "https://raw.githubusercontent.com/expo/expo/main/templates/expo-template-blank/assets/favicon.png" "assets/favicon.png"
-
       - name: Expo Prebuild (generate native iOS project)
         run: npx expo prebuild --platform ios --clean
 
