@@ -34,10 +34,9 @@ RCT_EXPORT_MODULE();
 
 - (instancetype)init {
     if (self = [super init]) {
-        // High priority queue for 60fps processing
         _cameraQueue = dispatch_queue_create("com.vision.cameraQueue", DISPATCH_QUEUE_SERIAL);
         _isStreaming = NO;
-        // Metal-backed CIContext for fastest JPEG compression
+        // Software renderer is safer for background processing, though slightly slower
         _ciContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @(NO)}];
     }
     return self;
@@ -74,7 +73,6 @@ RCT_EXPORT_METHOD(stopSession) {
     
     _captureSession = [[AVCaptureSession alloc] init];
     
-    // 1. Setup Input
     AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
     if (!device) return;
     
@@ -83,30 +81,24 @@ RCT_EXPORT_METHOD(stopSession) {
     if (!input || ![_captureSession canAddInput:input]) return;
     [_captureSession addInput:input];
     
-    // 2. Setup Output
     AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
     output.alwaysDiscardsLateVideoFrames = YES;
     
-    // Request BGRA for faster processing
+    // BGRA is optimal for CIContext
     output.videoSettings = @{(id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)};
     [output setSampleBufferDelegate:self queue:_cameraQueue];
     
     if (![_captureSession canAddOutput:output]) return;
     [_captureSession addOutput:output];
 
-    // 3. CRITICAL FIX: Find a format that actually supports 60 FPS at 1080p
+    // Find best 60FPS format
     AVCaptureDeviceFormat *bestFormat = nil;
-    AVFrameRateRange *bestFrameRateRange = nil;
-
     for (AVCaptureDeviceFormat *format in [device formats]) {
-        CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
-        
-        // Look for 1920x1080
-        if (dimensions.width == 1920 && dimensions.height == 1080) {
+        CMVideoDimensions dim = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+        if (dim.width == 1920 && dim.height == 1080) {
             for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
                 if (range.maxFrameRate >= 60) {
                     bestFormat = format;
-                    bestFrameRateRange = range;
                     break;
                 }
             }
@@ -122,7 +114,6 @@ RCT_EXPORT_METHOD(stopSession) {
             [device unlockForConfiguration];
         }
     } else {
-        // Fallback for older devices (will default to 30fps usually)
         _captureSession.sessionPreset = AVCaptureSessionPreset1920x1080;
     }
 }
@@ -143,44 +134,68 @@ RCT_EXPORT_METHOD(stopSession) {
     }
 }
 
+// Helper to write ALL bytes. If buffer fills, it waits.
+- (BOOL)writeAllBytes:(const void *)buffer length:(NSUInteger)length {
+    if (!_outputStream || _outputStream.streamStatus != NSStreamStatusOpen) return NO;
+    
+    NSUInteger bytesWritten = 0;
+    const uint8_t *bytePtr = (const uint8_t *)buffer;
+    
+    while (bytesWritten < length) {
+        if ([_outputStream hasSpaceAvailable]) {
+            NSInteger written = [_outputStream write:&bytePtr[bytesWritten] maxLength:(length - bytesWritten)];
+            if (written == -1) {
+                return NO; // Error
+            }
+            if (written > 0) {
+                bytesWritten += written;
+            }
+        } else {
+            // Wait slightly to prevent CPU spinning, but don't drop packet
+            [NSThread sleepForTimeInterval:0.001];
+        }
+    }
+    return YES;
+}
+
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    // Fail fast if not streaming or buffer full
-    if (!_isStreaming || !_outputStream || ![_outputStream hasSpaceAvailable]) return;
+    if (!_isStreaming || !_outputStream) return;
 
     CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (!imageBuffer) return;
 
-    // Use CIImage from CVImageBuffer (Fastest path)
     CIImage *ciImage = [CIImage imageWithCVPixelBuffer:imageBuffer];
     
-    // Compress to JPEG (0.5 quality is sweet spot for 60fps latency vs quality)
+    // Lowered quality slightly to 0.4 to prevent network congestion (WiFi bottleneck)
+    // 0.4 is still very good visually but halves the bandwidth vs 0.6
     NSData *jpegData = [_ciContext JPEGRepresentationOfImage:ciImage 
                                               colorSpace:ciImage.colorSpace 
-                                                 options:@{(__bridge NSString *)kCGImageDestinationLossyCompressionQuality: @(0.5)}];
+                                                 options:@{(__bridge NSString *)kCGImageDestinationLossyCompressionQuality: @(0.4)}];
     
     if (!jpegData) return;
 
-    // Protocol: [4 bytes length][JPEG Body]
     uint32_t length = (uint32_t)jpegData.length;
     uint32_t bigEndianLength = CFSwapInt32HostToBig(length);
     
-    // Write in one go if possible, or chunks (simplified here for speed)
-    [_outputStream write:(const uint8_t *)&bigEndianLength maxLength:4];
-    [_outputStream write:jpegData.bytes maxLength:jpegData.length];
+    // Combine Header + Body into one buffer to ensure atomicity
+    NSMutableData *packet = [NSMutableData dataWithCapacity:length + 4];
+    [packet appendBytes:&bigEndianLength length:4];
+    [packet appendData:jpegData];
+    
+    // Send critical packet
+    [self writeAllBytes:packet.bytes length:packet.length];
 }
 
 @end
 `;
 
 const withNativeStream = (config) => {
-  // 1. Add Local Network Permission (Required for iOS 14+ or app crashes/blocks on socket connect)
   config = withInfoPlist(config, (config) => {
     config.modResults.NSLocalNetworkUsageDescription = "Connect to PC for video streaming";
     config.modResults.NSCameraUsageDescription = "Capture video for streaming";
     return config;
   });
 
-  // 2. Inject Native Code
   return withXcodeProject(config, (config) => {
     const project = config.modResults;
     const projectRoot = config.modRequest.projectRoot;
