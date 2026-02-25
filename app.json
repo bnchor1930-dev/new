@@ -14,6 +14,7 @@
       "infoPlist": {
         "NSCameraUsageDescription": "This app needs camera access to stream video to your PC server.",
         "NSMicrophoneUsageDescription": "This app needs microphone access for video streaming.",
+        "NSLocalNetworkUsageDescription": "Cameraa Pro needs to access your local network to connect to your PC server.",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
         }
