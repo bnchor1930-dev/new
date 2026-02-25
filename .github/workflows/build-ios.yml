@@ -1,64 +1,127 @@
-name: Build Unsigned iOS IPA
+# RunBuild.ps1
+$ErrorActionPreference = "Stop"
 
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+# --- CONFIGURATION ---
+$RepoPath = "C:\Users\amand\Downloads\new"
+$LogPath = "C:\Users\amand\Downloads\githuberrors"
+$DateStr = Get-Date -Format 'yyyyMMdd-HHmmss'
+$FullLog = "$LogPath\FULL_RAW_LOG_$DateStr.txt"
+$SmartLog = "$LogPath\SMART_ANALYSIS_$DateStr.txt"
 
-jobs:
-  build-ios:
-    runs-on: macos-latest
+# --- THE SMART LOGIC ENGINE ---
+function Parse-SmartErrors {
+    param ( [string]$LogFilePath )
 
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+    $Content = Get-Content -Path $LogFilePath
+    $SmartErrors = @()
+    $CaptureMode = $false
+    $Buffer = @()
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+    # Regex to catch standard Xcode/Clang errors (File:Line:Col: error: Message)
+    $ClangErrorPattern = "^.+:\d+:\d+: error: .+$"
+    # Regex to catch fatal build failures (like Linker errors or Signing errors)
+    $FatalErrorPattern = "(?i)(undefined symbol|linker command failed|code signing|build failed|command setactiveuser failed)"
 
-      - name: Install Dependencies
-        run: npm ci
+    foreach ($Line in $Content) {
+        # 1. Start capturing if we hit a Compiler Error
+        if ($Line -match $ClangErrorPattern) {
+            $CaptureMode = $true
+            $Buffer += "`n------------------------------------------------------------"
+            $Buffer += " [CODE ERROR DETECTED]"
+            $Buffer += " $Line" # Add the error line itself
+            continue
+        }
 
-      - name: Expo Prebuild (generate native iOS project)
-        run: npx expo prebuild --platform ios --clean
+        # 2. Start capturing if we hit a Fatal System Error
+        if ($Line -match $FatalErrorPattern) {
+            $CaptureMode = $true
+            $Buffer += "`n------------------------------------------------------------"
+            $Buffer += " [SYSTEM/LINKER FAILURE]"
+            $Buffer += " $Line"
+            continue
+        }
 
-      - name: Install CocoaPods dependencies
-        run: |
-          cd ios
-          pod install
+        # 3. If we are in Capture Mode, grab the context (code snippets usually follow errors)
+        if ($CaptureMode) {
+            # Stop capturing if we hit a new build step (usually starts with "CompileC", "Ld", etc) or 5 lines of context
+            if ($Line -match "^(CompileC|Ld|CpResource|Touch|CheckDependencies)" -or $Buffer.Count -gt 8) {
+                $CaptureMode = $false
+                $SmartErrors += $Buffer
+                $Buffer = @()
+            } else {
+                $Buffer += "   $Line" # Indent context lines
+            }
+        }
+    }
+    return $SmartErrors
+}
 
-      - name: Archive iOS app (unsigned)
-        run: |
-          cd ios
-          xcodebuild archive \
-            -workspace CameraaPro.xcworkspace \
-            -scheme CameraaPro \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath ./build \
-            -archivePath ./build/Archive.xcarchive \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM="" \
-            CODE_SIGN_ENTITLEMENTS="" \
-            GCC_TREAT_WARNINGS_AS_ERRORS=NO
+# --- MAIN SCRIPT EXECUTION ---
 
-      - name: Export unsigned IPA
-        run: |
-          cd ios
-          mkdir -p Payload
-          # Copies the app directly from the archive to ensure path exists
-          cp -Rp ./build/Archive.xcarchive/Products/Applications/CameraaPro.app ./Payload/
-          zip -r CameraaPro-unsigned.ipa Payload
+Clear-Host
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "   SMART BUILD SYSTEM (INTELLIGENT PARSER) " -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
 
-      - name: Upload IPA Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: CameraaPro-unsigned-IPA
-          path: ios/CameraaPro-unsigned.ipa
-          retention-days: 7
-          if-no-files-found: error
+# 1. GIT PUSH (Ensures your YAML fix is live)
+if (Test-Path $RepoPath) { Set-Location $RepoPath }
+Write-Host "[1/5] Pushing latest fixes to GitHub..." -ForegroundColor Yellow
+try {
+    git add .
+    git commit -m "Fix build configuration"
+    git push origin main
+    Write-Host "   -> Code pushed." -ForegroundColor Green
+} catch {
+    Write-Host "   -> No new changes to push." -ForegroundColor Gray
+}
+
+# 2. TRIGGER WORKFLOW
+Write-Host "[2/5] Triggering GitHub Action..." -ForegroundColor Yellow
+try {
+    gh workflow run build-ios.yml
+} catch {
+    Write-Error "Failed. Please run 'gh auth login' first."
+}
+
+# 3. TRACK RUN
+Write-Host "   -> Waiting for GitHub..." -ForegroundColor Yellow
+Start-Sleep -Seconds 8
+$RunID = gh run list --workflow build-ios.yml --limit 1 --json databaseId --jq '.[0].databaseId'
+Write-Host "   -> Tracking Run ID: $RunID" -ForegroundColor Green
+
+# 4. STREAM STATUS
+Write-Host "[3/5] Building (Streaming status)..." -ForegroundColor Cyan
+gh run watch $RunID --exit-status
+
+# 5. SMART ANALYSIS
+Write-Host "------------------------------------------" -ForegroundColor Gray
+Write-Host "[4/5] Downloading Logs..." -ForegroundColor Magenta
+try {
+    gh run view $RunID --log > $FullLog
+} catch {
+    Write-Error "Could not download logs."
+}
+
+Write-Host "[5/5] Running Smart Logic Analysis..." -ForegroundColor Cyan
+
+$Analysis = Parse-SmartErrors -LogFilePath $FullLog
+
+if ($Analysis.Count -gt 0) {
+    # Write the smart report
+    $Report = "=== SMART ERROR REPORT ==="
+    $Report += "`nBuild Run ID: $RunID"
+    $Report += "`nDate: $DateStr"
+    $Report += "`nErrors Found: $($Analysis.Count)"
+    $Report += "`n==========================`n"
+    $Report += $Analysis -join "`n"
+    
+    $Report | Out-File -FilePath $SmartLog
+    
+    Write-Host "`n[!] INTELLIGENT PARSER FOUND ISSUES:" -ForegroundColor Red
+    Write-Host "    $SmartLog" -ForegroundColor Yellow
+    Invoke-Item $SmartLog
+} else {
+    Write-Host "`n[?] No code errors detected by the smart parser." -ForegroundColor Green
+    Write-Host "    Check the full log if the build failed anyway: $FullLog" -ForegroundColor Gray
+    Invoke-Item $FullLog
+}
