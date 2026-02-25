@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, NativeModules, NativeEventEmitter, SafeAreaView, StatusBar, Alert, Dimensions } from 'react-native';
-// FIX: Use CameraView (New API) instead of Camera (Legacy)
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { BlurView } from 'expo-blur';
 
@@ -8,22 +7,16 @@ const { VisionStreamModule } = NativeModules;
 const { width } = Dimensions.get('window');
 
 export default function App() {
-  // FIX: Use the new permission hook
   const [permission, requestPermission] = useCameraPermissions();
-  
   const [scanned, setScanned] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [serverInfo, setServerInfo] = useState({ ip: '', port: '' });
   const [status, setStatus] = useState("SCAN QR CODE");
 
-  // Initial Permission Request
   useEffect(() => {
-    if (!permission) {
-      requestPermission();
-    }
+    if (!permission) requestPermission();
   }, [permission]);
 
-  // Event Listeners for the Native Module
   useEffect(() => {
     const eventEmitter = new NativeEventEmitter(VisionStreamModule);
     const eventListener = eventEmitter.addListener('onStreamStatus', (event) => {
@@ -36,7 +29,6 @@ export default function App() {
       setScanned(false);
       setStatus("ERROR - SCAN AGAIN");
     });
-
     return () => {
       eventListener.remove();
       errorListener.remove();
@@ -45,25 +37,18 @@ export default function App() {
 
   const handleBarCodeScanned = ({ data }) => {
     if (scanned || streaming) return;
-    
-    // QR Format expected: "http://192.168.1.100:5000/ws" or just "192.168.1.100:5000"
     try {
-      // Regex to extract IP and Port
       const regex = /(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)/;
       const match = data.match(regex);
-      
       if (match) {
         const ip = match[1];
         const port = parseInt(match[2], 10);
-        
         setScanned(true);
         setServerInfo({ ip, port });
         startStream(ip, port);
         setStatus("CONNECTING...");
       }
-    } catch (e) {
-      // Ignore invalid QR codes
-    }
+    } catch (e) {}
   };
 
   const startStream = (ip, port) => {
@@ -78,16 +63,11 @@ export default function App() {
     setStatus("SCAN QR CODE");
   };
 
-  // Loading / Permission State Handling
-  if (!permission) return <View style={styles.container} />;
-  if (!permission.granted) {
+  if (!permission || !permission.granted) {
     return (
       <View style={styles.container}>
-        <Text style={{color: 'white', textAlign: 'center', marginTop: 100}}>
-          Camera Permission Required
-        </Text>
         <TouchableOpacity onPress={requestPermission} style={styles.stopBtn}>
-          <Text style={styles.btnText}>GRANT PERMISSION</Text>
+          <Text style={styles.btnText}>GRANT CAMERA ACCESS</Text>
         </TouchableOpacity>
       </View>
     );
@@ -97,31 +77,25 @@ export default function App() {
     <View style={styles.container}>
       <StatusBar barStyle="light-content" />
       
-      {/* FIX: New CameraView Component for SDK 51 */}
       {!streaming && (
         <CameraView
           style={StyleSheet.absoluteFillObject}
           facing="back"
           onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
-          barcodeScannerSettings={{
-            barcodeTypes: ["qr"],
-          }}
+          barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
         />
       )}
 
-      {/* STREAMING UI OVERLAY */}
       {streaming && (
         <View style={[styles.container, {backgroundColor: '#000'}]}>
           <Text style={styles.activeText}>STREAM ACTIVE</Text>
           <Text style={styles.ipText}>{serverInfo.ip}:{serverInfo.port}</Text>
-          
           <View style={styles.pulseContainer}>
             <View style={styles.pulse} />
           </View>
         </View>
       )}
 
-      {/* HUD INTERFACE */}
       <SafeAreaView style={styles.hud}>
         <BlurView intensity={30} tint="dark" style={styles.header}>
           <View style={styles.statusDot} backgroundColor={streaming ? '#00FF00' : '#FF0000'} />
@@ -152,19 +126,12 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000' },
+  container: { flex: 1, backgroundColor: '#000', justifyContent: 'center' },
   hud: { flex: 1, justifyContent: 'space-between' },
-  header: {
-    flexDirection: 'row', alignItems: 'center', margin: 16, padding: 16,
-    borderRadius: 16, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.5)',
-    borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)'
-  },
+  header: { flexDirection: 'row', alignItems: 'center', margin: 16, padding: 16, borderRadius: 16, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.5)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
   statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
   statusText: { color: '#00FF00', fontFamily: 'Courier', fontWeight: 'bold' },
-  scanFrame: {
-    width: width * 0.7, height: width * 0.7, alignSelf: 'center',
-    justifyContent: 'center', alignItems: 'center',
-  },
+  scanFrame: { width: width * 0.7, height: width * 0.7, alignSelf: 'center', justifyContent: 'center', alignItems: 'center' },
   corner: { position: 'absolute', width: 20, height: 20, borderColor: '#00FF00', borderWidth: 4 },
   tl: { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0 },
   tr: { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0 },
@@ -172,10 +139,7 @@ const styles = StyleSheet.create({
   br: { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0 },
   footer: { padding: 30, alignItems: 'center' },
   hintText: { color: 'rgba(255,255,255,0.6)', letterSpacing: 2, fontSize: 12 },
-  stopBtn: {
-    backgroundColor: 'rgba(255, 0, 0, 0.3)', borderColor: '#FF0000', borderWidth: 1,
-    paddingVertical: 15, paddingHorizontal: 40, borderRadius: 8,
-  },
+  stopBtn: { backgroundColor: 'rgba(255, 0, 0, 0.3)', borderColor: '#FF0000', borderWidth: 1, paddingVertical: 15, paddingHorizontal: 40, borderRadius: 8 },
   btnText: { color: '#FF0000', fontWeight: 'bold', letterSpacing: 1 },
   activeText: { color: '#00FF00', fontSize: 24, fontWeight: '900', textAlign: 'center', marginTop: 100 },
   ipText: { color: '#555', textAlign: 'center', marginTop: 10 },

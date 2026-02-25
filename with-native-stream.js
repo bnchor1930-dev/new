@@ -19,7 +19,7 @@ const OBJC_SOURCE_CODE = `
     NSOutputStream *_outputStream;
     dispatch_queue_t _cameraQueue;
     BOOL _isStreaming;
-    CIContext *_ciContext; // FIX: Store context here to reuse it
+    CIContext *_ciContext;
 }
 
 RCT_EXPORT_MODULE();
@@ -36,8 +36,8 @@ RCT_EXPORT_MODULE();
     if (self = [super init]) {
         _cameraQueue = dispatch_queue_create("com.vision.cameraQueue", DISPATCH_QUEUE_SERIAL);
         _isStreaming = NO;
-        // FIX: Initialize CIContext only ONCE (High Performance)
-        _ciContext = [CIContext contextWithOptions:nil]; 
+        // FIX: Create Context ONCE to stop memory crash
+        _ciContext = [CIContext contextWithOptions:nil];
     }
     return self;
 }
@@ -77,7 +77,6 @@ RCT_EXPORT_METHOD(stopSession) {
     AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
     if (!device) return;
     
-    // Attempt 60 FPS
     NSError *error = nil;
     if ([device lockForConfiguration:&error]) {
         device.activeVideoMinFrameDuration = CMTimeMake(1, 60);
@@ -116,24 +115,20 @@ RCT_EXPORT_METHOD(stopSession) {
 }
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    // 1. Safety Checks
     if (!_isStreaming || !_outputStream || ![_outputStream hasSpaceAvailable]) return;
 
-    // 2. Get Buffer
     CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (!imageBuffer) return;
 
-    // 3. Convert to JPEG using the REUSED Context (No more memory leak)
     CIImage *ciImage = [CIImage imageWithCVPixelBuffer:imageBuffer];
     
-    // Correct constant usage for compression
+    // FIX: Use Correct ImageIO constant and cast to NSString
     NSData *jpegData = [_ciContext JPEGRepresentationOfImage:ciImage 
                                               colorSpace:ciImage.colorSpace 
                                                  options:@{(__bridge NSString *)kCGImageDestinationLossyCompressionQuality: @(0.6)}];
     
     if (!jpegData) return;
 
-    // 4. Send Protocol: [4-BYTE-SIZE] + [BODY]
     uint32_t length = (uint32_t)jpegData.length;
     uint32_t bigEndianLength = CFSwapInt32HostToBig(length);
     
