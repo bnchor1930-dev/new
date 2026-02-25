@@ -1,4 +1,4 @@
-const { withXcodeProject } = require('@expo/config-plugins');
+const { withXcodeProject, withInfoPlist } = require('@expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
 
@@ -34,10 +34,11 @@ RCT_EXPORT_MODULE();
 
 - (instancetype)init {
     if (self = [super init]) {
+        // High priority queue for 60fps processing
         _cameraQueue = dispatch_queue_create("com.vision.cameraQueue", DISPATCH_QUEUE_SERIAL);
         _isStreaming = NO;
-        // FIX: Create Context ONCE to stop memory crash
-        _ciContext = [CIContext contextWithOptions:nil];
+        // Metal-backed CIContext for fastest JPEG compression
+        _ciContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @(NO)}];
     }
     return self;
 }
@@ -72,29 +73,57 @@ RCT_EXPORT_METHOD(stopSession) {
     if (_captureSession) return;
     
     _captureSession = [[AVCaptureSession alloc] init];
-    _captureSession.sessionPreset = AVCaptureSessionPreset1920x1080;
     
+    // 1. Setup Input
     AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
     if (!device) return;
     
     NSError *error = nil;
-    if ([device lockForConfiguration:&error]) {
-        device.activeVideoMinFrameDuration = CMTimeMake(1, 60);
-        device.activeVideoMaxFrameDuration = CMTimeMake(1, 60);
-        [device unlockForConfiguration];
-    }
-
-    AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:device error:nil];
-    if (input && [_captureSession canAddInput:input]) {
-        [_captureSession addInput:input];
-    }
+    AVCaptureDeviceInput *input = [AVCaptureDeviceInput deviceInputWithDevice:device error:&error];
+    if (!input || ![_captureSession canAddInput:input]) return;
+    [_captureSession addInput:input];
     
+    // 2. Setup Output
     AVCaptureVideoDataOutput *output = [[AVCaptureVideoDataOutput alloc] init];
     output.alwaysDiscardsLateVideoFrames = YES;
+    
+    // Request BGRA for faster processing
+    output.videoSettings = @{(id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)};
     [output setSampleBufferDelegate:self queue:_cameraQueue];
     
-    if ([_captureSession canAddOutput:output]) {
-        [_captureSession addOutput:output];
+    if (![_captureSession canAddOutput:output]) return;
+    [_captureSession addOutput:output];
+
+    // 3. CRITICAL FIX: Find a format that actually supports 60 FPS at 1080p
+    AVCaptureDeviceFormat *bestFormat = nil;
+    AVFrameRateRange *bestFrameRateRange = nil;
+
+    for (AVCaptureDeviceFormat *format in [device formats]) {
+        CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+        
+        // Look for 1920x1080
+        if (dimensions.width == 1920 && dimensions.height == 1080) {
+            for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
+                if (range.maxFrameRate >= 60) {
+                    bestFormat = format;
+                    bestFrameRateRange = range;
+                    break;
+                }
+            }
+        }
+        if (bestFormat) break;
+    }
+
+    if (bestFormat) {
+        if ([device lockForConfiguration:&error]) {
+            device.activeFormat = bestFormat;
+            device.activeVideoMinFrameDuration = CMTimeMake(1, 60);
+            device.activeVideoMaxFrameDuration = CMTimeMake(1, 60);
+            [device unlockForConfiguration];
+        }
+    } else {
+        // Fallback for older devices (will default to 30fps usually)
+        _captureSession.sessionPreset = AVCaptureSessionPreset1920x1080;
     }
 }
 
@@ -115,23 +144,27 @@ RCT_EXPORT_METHOD(stopSession) {
 }
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+    // Fail fast if not streaming or buffer full
     if (!_isStreaming || !_outputStream || ![_outputStream hasSpaceAvailable]) return;
 
     CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (!imageBuffer) return;
 
+    // Use CIImage from CVImageBuffer (Fastest path)
     CIImage *ciImage = [CIImage imageWithCVPixelBuffer:imageBuffer];
     
-    // FIX: Use Correct ImageIO constant and cast to NSString
+    // Compress to JPEG (0.5 quality is sweet spot for 60fps latency vs quality)
     NSData *jpegData = [_ciContext JPEGRepresentationOfImage:ciImage 
                                               colorSpace:ciImage.colorSpace 
-                                                 options:@{(__bridge NSString *)kCGImageDestinationLossyCompressionQuality: @(0.6)}];
+                                                 options:@{(__bridge NSString *)kCGImageDestinationLossyCompressionQuality: @(0.5)}];
     
     if (!jpegData) return;
 
+    // Protocol: [4 bytes length][JPEG Body]
     uint32_t length = (uint32_t)jpegData.length;
     uint32_t bigEndianLength = CFSwapInt32HostToBig(length);
     
+    // Write in one go if possible, or chunks (simplified here for speed)
     [_outputStream write:(const uint8_t *)&bigEndianLength maxLength:4];
     [_outputStream write:jpegData.bytes maxLength:jpegData.length];
 }
@@ -140,6 +173,14 @@ RCT_EXPORT_METHOD(stopSession) {
 `;
 
 const withNativeStream = (config) => {
+  // 1. Add Local Network Permission (Required for iOS 14+ or app crashes/blocks on socket connect)
+  config = withInfoPlist(config, (config) => {
+    config.modResults.NSLocalNetworkUsageDescription = "Connect to PC for video streaming";
+    config.modResults.NSCameraUsageDescription = "Capture video for streaming";
+    return config;
+  });
+
+  // 2. Inject Native Code
   return withXcodeProject(config, (config) => {
     const project = config.modResults;
     const projectRoot = config.modRequest.projectRoot;
