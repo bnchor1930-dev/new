@@ -1,154 +1,210 @@
-import customtkinter as ctk
-from PIL import Image, ImageTk
-import socket
-import threading
-import cv2
-import numpy as np
-import qrcode
-import struct
-import time
+import React, { useState, useEffect } from 'react';
+import { StyleSheet, Text, View, TouchableOpacity, NativeModules, NativeEventEmitter, SafeAreaView, StatusBar, Alert, Dimensions } from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { BlurView } from 'expo-blur';
 
-PORT = 5000
-BG_COLOR = "#000000"     
-TEXT_COLOR = "#FFFFFF"
+const { VisionStreamModule } = NativeModules;
+const { width } = Dimensions.get('window');
 
-ctk.set_appearance_mode("Dark")
-ctk.set_default_color_theme("blue")
+const ROTATIONS = ['portrait', 'landscapeRight', 'upsideDown', 'landscapeLeft'];
 
-class MetroServer(ctk.CTk):
-    def __init__(self):
-        super().__init__()
+export default function App() {
+  const [permission, requestPermission] = useCameraPermissions();
+  const [scanned, setScanned] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [serverInfo, setServerInfo] = useState({ ip: '', port: '' });
+  const [status, setStatus] = useState("SCAN QR CODE");
+  
+  // UI State for Active Controls
+  const [lens, setLens] = useState('wide'); // 'wide' or 'ultra'
+  const [rotationIdx, setRotationIdx] = useState(0);
 
-        self.title("VISION UPLINK // SERVER")
-        self.geometry("1000x700")
-        self.configure(fg_color=BG_COLOR)
-        
-        self.running = True
-        self.current_ip = self.get_local_ip()
-        self.frames = 0
-        self.fps_start = time.time()
+  useEffect(() => {
+    if (!permission) requestPermission();
+  }, [permission]);
 
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+  useEffect(() => {
+    const eventEmitter = new NativeEventEmitter(VisionStreamModule);
+    
+    const eventListener = eventEmitter.addListener('onStreamStatus', (event) => {
+      if (event.status === 'active') setStatus(`STREAMING TO ${serverInfo.ip}`);
+      if (event.status === 'stopped') setStatus("DISCONNECTED");
+    });
+    
+    const errorListener = eventEmitter.addListener('onStreamError', (event) => {
+      Alert.alert("Stream Error", event.error);
+      setStreaming(false);
+      setScanned(false);
+      setStatus("ERROR - SCAN AGAIN");
+    });
 
-        # === LEFT PANEL ===
-        self.sidebar = ctk.CTkFrame(self, width=250, corner_radius=0, fg_color="#1a1a1a")
-        self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_propagate(False)
+    return () => {
+      eventListener.remove();
+      errorListener.remove();
+    };
+  }, [serverInfo]);
 
-        ctk.CTkLabel(self.sidebar, text="VISION\nUPLINK", font=("Arial Black", 24), text_color="#00FF00", justify="left").pack(pady=40, padx=20, anchor="w")
-        
-        self.status_label = ctk.CTkLabel(self.sidebar, text="WAITING...", font=("Consolas", 14), text_color="yellow")
-        self.status_label.pack(pady=10, padx=20, anchor="w")
-        
-        ctk.CTkLabel(self.sidebar, text=f"IP: {self.current_ip}", text_color="#888").pack(padx=20, anchor="w")
+  const handleBarCodeScanned = ({ data }) => {
+    if (scanned || streaming) return;
+    try {
+      const regex = /(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)/;
+      const match = data.match(regex);
+      if (match) {
+        const ip = match[1];
+        const port = parseInt(match[2], 10);
+        setScanned(true);
+        setServerInfo({ ip, port });
+        startStream(ip, port);
+        setStatus("CONNECTING...");
+      }
+    } catch (e) {}
+  };
 
-        self.qr_label = ctk.CTkLabel(self.sidebar, text="")
-        self.qr_label.pack(pady=40)
-        self.generate_qr()
+  const startStream = (ip, port) => {
+    setStreaming(true);
+    // Start Native Session
+    VisionStreamModule.startSession(ip, port);
+    
+    // Apply Default Settings immediately
+    VisionStreamModule.setLens(lens);
+    VisionStreamModule.setOrientation(ROTATIONS[rotationIdx]);
+  };
 
-        self.fps_label = ctk.CTkLabel(self.sidebar, text="FPS: 0", font=("Consolas", 30), text_color="#00FF00")
-        self.fps_label.pack(side="bottom", pady=40, padx=20, anchor="w")
+  const stopStream = () => {
+    VisionStreamModule.stopSession();
+    setStreaming(false);
+    setScanned(false);
+    setStatus("SCAN QR CODE");
+  };
 
-        # === RIGHT PANEL (VIDEO) ===
-        self.video_frame = ctk.CTkFrame(self, fg_color="#000000")
-        self.video_frame.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
-        
-        self.feed_label = ctk.CTkLabel(self.video_frame, text="NO SIGNAL", text_color="#333", font=("Arial", 20))
-        self.feed_label.place(relx=0.5, rely=0.5, anchor="center")
+  const toggleLens = (type) => {
+    setLens(type);
+    if (streaming) VisionStreamModule.setLens(type);
+  };
 
-        self.thread = threading.Thread(target=self.start_server, daemon=True)
-        self.thread.start()
+  const cycleRotation = () => {
+    const nextIdx = (rotationIdx + 1) % 4;
+    setRotationIdx(nextIdx);
+    if (streaming) VisionStreamModule.setOrientation(ROTATIONS[nextIdx]);
+  };
 
-    def get_local_ip(self):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            return s.getsockname()[0]
-        except: return "127.0.0.1"
+  if (!permission || !permission.granted) {
+    return (
+      <View style={styles.container}>
+        <TouchableOpacity onPress={requestPermission} style={styles.stopBtn}>
+          <Text style={styles.btnText}>GRANT CAMERA ACCESS</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
-    def generate_qr(self):
-        qr = qrcode.QRCode(box_size=6, border=2)
-        qr.add_data(f"{self.current_ip}:{PORT}")
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white").get_image()
-        tk_img = ctk.CTkImage(light_image=img, size=(180, 180))
-        self.qr_label.configure(image=tk_img)
+  return (
+    <View style={styles.container}>
+      <StatusBar barStyle="light-content" />
+      
+      {!streaming && (
+        <CameraView
+          style={StyleSheet.absoluteFillObject}
+          facing="back"
+          onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
+          barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+        />
+      )}
 
-    def start_server(self):
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        server.bind(('0.0.0.0', PORT))
-        server.listen(1)
+      {streaming && (
+        <View style={[styles.container, {backgroundColor: '#000'}]}>
+          <Text style={styles.activeText}>STREAM ACTIVE</Text>
+          <Text style={styles.ipText}>{serverInfo.ip}:{serverInfo.port}</Text>
+          <Text style={styles.infoText}>{lens.toUpperCase()} LENS | {ROTATIONS[rotationIdx].toUpperCase()}</Text>
+          
+          <View style={styles.pulseContainer}>
+            <View style={styles.pulse} />
+          </View>
+        </View>
+      )}
 
-        while self.running:
-            try:
-                conn, addr = server.accept()
-                self.status_label.configure(text=f"CONNECTED:\n{addr[0]}", text_color="#00FF00")
-                self.feed_label.configure(text="")
-                
-                while self.running:
-                    # 1. Read Length
-                    len_data = self.recv_bytes(conn, 4)
-                    if not len_data: break
-                    length = struct.unpack('>I', len_data)[0]
+      <SafeAreaView style={styles.hud}>
+        <BlurView intensity={30} tint="dark" style={styles.header}>
+          <View style={styles.statusDot} backgroundColor={streaming ? '#00FF00' : '#FF0000'} />
+          <Text style={styles.statusText}>{status}</Text>
+        </BlurView>
 
-                    # 2. Read JPEG
-                    jpeg_data = self.recv_bytes(conn, length)
-                    if not jpeg_data: break
+        {!streaming && (
+          <View style={styles.scanFrame}>
+            <View style={[styles.corner, styles.tl]} />
+            <View style={[styles.corner, styles.tr]} />
+            <View style={[styles.corner, styles.bl]} />
+            <View style={[styles.corner, styles.br]} />
+          </View>
+        )}
 
-                    # 3. Decode
-                    np_arr = np.frombuffer(jpeg_data, dtype=np.uint8)
-                    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        {/* CONTROLS FOOTER */}
+        <View style={styles.footer}>
+          {streaming ? (
+            <View style={styles.controlPanel}>
+              
+              {/* Lens Selection Row */}
+              <View style={styles.lensRow}>
+                <TouchableOpacity 
+                  style={[styles.lensBtn, lens === 'wide' && styles.lensBtnActive]} 
+                  onPress={() => toggleLens('wide')}>
+                  <Text style={[styles.lensText, lens === 'wide' && styles.lensTextActive]}>1x</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[styles.lensBtn, lens === 'ultra' && styles.lensBtnActive]} 
+                  onPress={() => toggleLens('ultra')}>
+                  <Text style={[styles.lensText, lens === 'ultra' && styles.lensTextActive]}>0.5x</Text>
+                </TouchableOpacity>
+              </View>
 
-                    if frame is not None:
-                        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        pil_img = Image.fromarray(rgb)
-                        
-                        # Smart Resize Logic: Fit to window while maintaining aspect ratio
-                        disp_w = self.video_frame.winfo_width()
-                        disp_h = self.video_frame.winfo_height()
-                        
-                        img_w, img_h = pil_img.size
-                        ratio = min(disp_w/img_w, disp_h/img_h)
-                        new_w = int(img_w * ratio)
-                        new_h = int(img_h * ratio)
-                        
-                        ctk_img = ctk.CTkImage(light_image=pil_img, size=(new_w, new_h))
-                        self.after(0, self.update_ui, ctk_img)
-                        
-                        self.frames += 1
-                        if time.time() - self.fps_start >= 1:
-                            self.fps_label.configure(text=f"FPS: {self.frames}")
-                            self.frames = 0
-                            self.fps_start = time.time()
+              {/* Rotation Control */}
+              <TouchableOpacity style={styles.rotateBtn} onPress={cycleRotation}>
+                <Text style={styles.btnText}>ROTATE 90°</Text>
+              </TouchableOpacity>
 
-            except Exception as e:
-                print(f"Connection Reset: {e}")
-            finally:
-                if 'conn' in locals(): conn.close()
-                self.status_label.configure(text="WAITING...", text_color="yellow")
-                self.feed_label.configure(image=None, text="SIGNAL LOST")
+              {/* Kill Switch */}
+              <TouchableOpacity style={styles.stopBtn} onPress={stopStream}>
+                <Text style={styles.btnText}>TERMINATE</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Text style={styles.hintText}>ALIGN QR CODE TO CONNECT</Text>
+          )}
+        </View>
+      </SafeAreaView>
+    </View>
+  );
+}
 
-    def recv_bytes(self, sock, count):
-        buf = b''
-        while len(buf) < count:
-            try:
-                newbuf = sock.recv(count - len(buf))
-                if not newbuf: return None
-                buf += newbuf
-            except: return None
-        return buf
-
-    def update_ui(self, img):
-        self.feed_label.configure(image=img)
-
-    def on_close(self):
-        self.running = False
-        self.destroy()
-
-if __name__ == "__main__":
-    app = MetroServer()
-    app.protocol("WM_DELETE_WINDOW", app.on_close)
-    app.mainloop()
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#000', justifyContent: 'center' },
+  hud: { flex: 1, justifyContent: 'space-between' },
+  header: { flexDirection: 'row', alignItems: 'center', margin: 16, padding: 16, borderRadius: 16, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.5)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
+  statusText: { color: '#00FF00', fontFamily: 'Courier', fontWeight: 'bold' },
+  scanFrame: { width: width * 0.7, height: width * 0.7, alignSelf: 'center', justifyContent: 'center', alignItems: 'center' },
+  corner: { position: 'absolute', width: 20, height: 20, borderColor: '#00FF00', borderWidth: 4 },
+  tl: { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0 },
+  tr: { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0 },
+  bl: { bottom: 0, left: 0, borderRightWidth: 0, borderTopWidth: 0 },
+  br: { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0 },
+  footer: { padding: 20, alignItems: 'center' },
+  hintText: { color: 'rgba(255,255,255,0.6)', letterSpacing: 2, fontSize: 12 },
+  
+  controlPanel: { width: '100%', alignItems: 'center', gap: 10 },
+  lensRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  lensBtn: { width: 60, height: 40, borderRadius: 20, backgroundColor: '#333', justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#555' },
+  lensBtnActive: { backgroundColor: '#00FF00', borderColor: '#00FF00' },
+  lensText: { color: '#AAA', fontWeight: 'bold' },
+  lensTextActive: { color: '#000' },
+  
+  rotateBtn: { width: '100%', backgroundColor: '#222', padding: 15, borderRadius: 8, alignItems: 'center', marginBottom: 10, borderWidth: 1, borderColor: '#444' },
+  stopBtn: { width: '100%', backgroundColor: 'rgba(255, 0, 0, 0.3)', borderColor: '#FF0000', borderWidth: 1, paddingVertical: 15, borderRadius: 8, alignItems: 'center' },
+  btnText: { color: '#FF0000', fontWeight: 'bold', letterSpacing: 1 },
+  
+  activeText: { color: '#00FF00', fontSize: 24, fontWeight: '900', textAlign: 'center', marginTop: 100 },
+  ipText: { color: '#555', textAlign: 'center', marginTop: 10 },
+  infoText: { color: '#333', textAlign: 'center', marginTop: 5, fontSize: 12 },
+  pulseContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  pulse: { width: 200, height: 200, borderRadius: 100, borderWidth: 1, borderColor: '#00FF00', opacity: 0.2 }
+});
