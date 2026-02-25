@@ -4,13 +4,12 @@ const path = require('path');
 
 const SOURCE_FILENAME = 'VisionStreamModule.m';
 
-// PURE OBJECTIVE-C IMPLEMENTATION (No Swift Bridging Header required)
 const OBJC_SOURCE_CODE = `
 #import <React/RCTBridgeModule.h>
 #import <React/RCTEventEmitter.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreFoundation/CoreFoundation.h>
-#import <ImageIO/ImageIO.h> // FIX 1: Required for compression constants
+#import <ImageIO/ImageIO.h>
 
 @interface VisionStreamModule : RCTEventEmitter <RCTBridgeModule, AVCaptureVideoDataOutputSampleBufferDelegate>
 @end
@@ -20,6 +19,7 @@ const OBJC_SOURCE_CODE = `
     NSOutputStream *_outputStream;
     dispatch_queue_t _cameraQueue;
     BOOL _isStreaming;
+    CIContext *_ciContext; // FIX: Store context here to reuse it
 }
 
 RCT_EXPORT_MODULE();
@@ -36,6 +36,8 @@ RCT_EXPORT_MODULE();
     if (self = [super init]) {
         _cameraQueue = dispatch_queue_create("com.vision.cameraQueue", DISPATCH_QUEUE_SERIAL);
         _isStreaming = NO;
+        // FIX: Initialize CIContext only ONCE (High Performance)
+        _ciContext = [CIContext contextWithOptions:nil]; 
     }
     return self;
 }
@@ -75,7 +77,7 @@ RCT_EXPORT_METHOD(stopSession) {
     AVCaptureDevice *device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
     if (!device) return;
     
-    // Force 60 FPS
+    // Attempt 60 FPS
     NSError *error = nil;
     if ([device lockForConfiguration:&error]) {
         device.activeVideoMinFrameDuration = CMTimeMake(1, 60);
@@ -114,23 +116,24 @@ RCT_EXPORT_METHOD(stopSession) {
 }
 
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
+    // 1. Safety Checks
     if (!_isStreaming || !_outputStream || ![_outputStream hasSpaceAvailable]) return;
 
+    // 2. Get Buffer
     CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (!imageBuffer) return;
 
+    // 3. Convert to JPEG using the REUSED Context (No more memory leak)
     CIImage *ciImage = [CIImage imageWithCVPixelBuffer:imageBuffer];
-    CIContext *context = [CIContext context]; // In prod, reuse this context
     
-    // FIX 2: Use the correct constant (kCGImageDestinationLossyCompressionQuality) 
-    // FIX 3: Cast it to NSString* for the dictionary key
-    NSData *jpegData = [context JPEGRepresentationOfImage:ciImage 
+    // Correct constant usage for compression
+    NSData *jpegData = [_ciContext JPEGRepresentationOfImage:ciImage 
                                               colorSpace:ciImage.colorSpace 
                                                  options:@{(__bridge NSString *)kCGImageDestinationLossyCompressionQuality: @(0.6)}];
     
     if (!jpegData) return;
 
-    // Protocol: [4-BYTE-SIZE] + [BODY]
+    // 4. Send Protocol: [4-BYTE-SIZE] + [BODY]
     uint32_t length = (uint32_t)jpegData.length;
     uint32_t bigEndianLength = CFSwapInt32HostToBig(length);
     
@@ -147,7 +150,6 @@ const withNativeStream = (config) => {
     const projectRoot = config.modRequest.projectRoot;
     const projectName = config.modRequest.projectName || "CameraaPro";
 
-    // 1. Prepare Paths
     const iosDir = path.join(projectRoot, 'ios');
     const sourceDir = path.join(iosDir, projectName);
 
@@ -155,13 +157,10 @@ const withNativeStream = (config) => {
       fs.mkdirSync(sourceDir, { recursive: true });
     }
 
-    // 2. Write File
     const sourcePath = path.join(sourceDir, SOURCE_FILENAME);
     fs.writeFileSync(sourcePath, OBJC_SOURCE_CODE, 'utf8');
 
-    // 3. Link to Xcode – more robust group lookup
     let mainGroup = project.findPBXGroupKey({ name: projectName });
-
     if (!mainGroup) {
       mainGroup = project.findPBXGroupKey({ name: 'App' }) ||
                   project.pbxGroupByPath(projectName) ||
@@ -169,7 +168,6 @@ const withNativeStream = (config) => {
     }
 
     const targetUuid = project.getFirstTarget().uuid;
-
     if (!project.hasFile(SOURCE_FILENAME)) {
       project.addSourceFile(
         path.join(projectName, SOURCE_FILENAME),
@@ -177,7 +175,6 @@ const withNativeStream = (config) => {
         mainGroup
       );
     }
-
     return config;
   });
 };
