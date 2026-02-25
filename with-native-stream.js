@@ -143,7 +143,6 @@ const withNativeStream = (config) => {
   return withXcodeProject(config, (config) => {
     const project = config.modResults;
     const projectRoot = config.modRequest.projectRoot;
-    // Use sanitized name matching app.json
     const projectName = config.modRequest.projectName || "CameraaPro";
 
     // 1. Prepare Paths
@@ -161,7 +160,6 @@ const withNativeStream = (config) => {
     // 3. Link to Xcode – more robust group lookup
     let mainGroup = project.findPBXGroupKey({ name: projectName });
 
-    // Fallbacks if group not found by name
     if (!mainGroup) {
       mainGroup = project.findPBXGroupKey({ name: 'App' }) ||
                   project.pbxGroupByPath(projectName) ||
@@ -170,10 +168,9 @@ const withNativeStream = (config) => {
 
     const targetUuid = project.getFirstTarget().uuid;
 
-    // Only add if file isn't already present
     if (!project.hasFile(SOURCE_FILENAME)) {
       project.addSourceFile(
-        path.join(projectName, SOURCE_FILENAME), // relative path inside Xcode project
+        path.join(projectName, SOURCE_FILENAME),
         { target: targetUuid },
         mainGroup
       );
