@@ -10,6 +10,7 @@ const OBJC_SOURCE_CODE = `
 #import <React/RCTEventEmitter.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import <ImageIO/ImageIO.h> // FIX 1: Required for compression constants
 
 @interface VisionStreamModule : RCTEventEmitter <RCTBridgeModule, AVCaptureVideoDataOutputSampleBufferDelegate>
 @end
@@ -121,10 +122,11 @@ RCT_EXPORT_METHOD(stopSession) {
     CIImage *ciImage = [CIImage imageWithCVPixelBuffer:imageBuffer];
     CIContext *context = [CIContext context]; // In prod, reuse this context
     
-    // Compression Quality 0.6
+    // FIX 2: Use the correct constant (kCGImageDestinationLossyCompressionQuality) 
+    // FIX 3: Cast it to NSString* for the dictionary key
     NSData *jpegData = [context JPEGRepresentationOfImage:ciImage 
                                               colorSpace:ciImage.colorSpace 
-                                                 options:@{kCIImageRepresentationCompressionQuality: @(0.6)}];
+                                                 options:@{(__bridge NSString *)kCGImageDestinationLossyCompressionQuality: @(0.6)}];
     
     if (!jpegData) return;
 
