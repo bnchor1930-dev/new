@@ -41,6 +41,7 @@ jobs:
             -derivedDataPath ./build \
             -archivePath ./build/Archive.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM=""
 
@@ -48,7 +49,7 @@ jobs:
         run: |
           cd ios
           mkdir -p Payload
-          # FIX: Copy from the Archive path, not the intermediate build path
+          # FIX: Copy directly from the Archive.xcarchive
           cp -Rp ./build/Archive.xcarchive/Products/Applications/CameraaPro.app ./Payload/
           zip -r CameraaPro-unsigned.ipa Payload
 
