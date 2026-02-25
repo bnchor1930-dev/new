@@ -48,7 +48,8 @@ jobs:
         run: |
           cd ios
           mkdir -p Payload
-          cp -Rp ./build/Build/Products/Release-iphoneos/CameraaPro.app ./Payload/
+          # FIX: Copy from the Archive path, not the intermediate build path
+          cp -Rp ./build/Archive.xcarchive/Products/Applications/CameraaPro.app ./Payload/
           zip -r CameraaPro-unsigned.ipa Payload
 
       - name: Upload IPA Artifact
