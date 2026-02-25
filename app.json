@@ -1,0 +1,54 @@
+{
+  "expo": {
+    "name": "CameraaPro",
+    "slug": "cameraa-pro",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yourname.cameraapro",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app needs camera access to stream video to your PC server.",
+        "NSMicrophoneUsageDescription": "This app needs microphone access for video streaming.",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.INTERNET",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.yourname.cameraapro"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Cameraa Pro to access your camera to stream video.",
+          "microphonePermission": "Allow Cameraa Pro to access your microphone for video streaming."
+        }
+      ],
+      "./with-native-stream.js"
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+.pnp.*
+
+# Expo specific
+.expo/
+dist/
+web-build/
+
+# Native directories (Generated automatically by npx expo prebuild on GitHub Actions)
+ios/
+android/
+
+# Debug and Logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# OS Metadata
+.DS_Store
+Thumbs.db
+
+# App Build Outputs
+*.ipa
+*.apk
+*.aab
+
+# Credentials and Keys
+*.pem
+
+# Environment Variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local

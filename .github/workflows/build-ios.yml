@@ -1,0 +1,69 @@
+name: Build Unsigned iOS IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      # Create minimal placeholder assets so prebuild doesn't fail
+      - name: Create Default Assets
+        run: |
+          mkdir -p assets
+          curl -L -o assets/icon.png https://raw.githubusercontent.com/expo/expo/main/templates/expo-template-blank/assets/icon.png
+          curl -L -o assets/splash.png https://raw.githubusercontent.com/expo/expo/main/templates/expo-template-blank/assets/splash.png
+          curl -L -o assets/adaptive-icon.png https://raw.githubusercontent.com/expo/expo/main/templates/expo-template-blank/assets/adaptive-icon.png
+          curl -L -o assets/favicon.png https://raw.githubusercontent.com/expo/expo/main/templates/expo-template-blank/assets/favicon.png
+
+      - name: Expo Prebuild (generate native iOS project)
+        run: npx expo prebuild --platform ios --clean
+
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios
+          pod install
+
+      - name: Archive iOS app (unsigned)
+        run: |
+          cd ios
+          xcodebuild archive \
+            -workspace CameraaPro.xcworkspace \
+            -scheme CameraaPro \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath ./build \
+            -archivePath ./build/Archive.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+
+      - name: Export unsigned IPA
+        run: |
+          cd ios
+          mkdir -p Payload
+          cp -Rp ./build/Build/Products/Release-iphoneos/CameraaPro.app ./Payload/
+          zip -r CameraaPro-unsigned.ipa Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CameraaPro-unsigned-IPA
+          path: ios/CameraaPro-unsigned.ipa
+          retention-days: 7
+          if-no-files-found: error
