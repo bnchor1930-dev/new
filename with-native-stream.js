@@ -20,14 +20,15 @@ const OBJC_SOURCE_CODE = `
     AVCaptureVideoDataOutput *_currentOutput;
     
     NSOutputStream *_outputStream;
-    NSInputStream *_inputStream; // NEW: To hear the server
+    NSInputStream *_inputStream;
     
     dispatch_queue_t _cameraQueue;
-    dispatch_queue_t _networkQueue; // NEW: To listen without blocking video
+    dispatch_queue_t _networkQueue;
     
     BOOL _isStreaming;
     CIContext *_ciContext;
     NSString *_currentLens;
+    CGFloat _currentZoom; // NEW: track current zoom level for incremental changes
 }
 
 RCT_EXPORT_MODULE();
@@ -47,6 +48,7 @@ RCT_EXPORT_MODULE();
         _isStreaming = NO;
         _ciContext = [CIContext contextWithOptions:@{kCIContextUseSoftwareRenderer: @(NO)}];
         _currentLens = @"wide";
+        _currentZoom = 1.0;
     }
     return self;
 }
@@ -96,7 +98,14 @@ RCT_EXPORT_METHOD(setOrientation:(NSString *)orientation) {
     });
 }
 
-// Internal Logic (Used by both UI and Remote Server)
+// NEW: Manual Zoom Override from App UI
+RCT_EXPORT_METHOD(setZoom:(CGFloat)zoomFactor) {
+    dispatch_async(_cameraQueue, ^{
+        [self setZoomInternal:zoomFactor];
+    });
+}
+
+// Internal Logic
 - (void)switchLensInternal:(NSString *)lensType {
     if ([_currentLens isEqualToString:lensType]) return;
     _currentLens = lensType;
@@ -115,6 +124,22 @@ RCT_EXPORT_METHOD(setOrientation:(NSString *)orientation) {
         else if ([orientation isEqualToString:@"landscapeRight"]) conn.videoOrientation = AVCaptureVideoOrientationLandscapeRight;
         else if ([orientation isEqualToString:@"landscapeLeft"]) conn.videoOrientation = AVCaptureVideoOrientationLandscapeLeft;
         else if ([orientation isEqualToString:@"upsideDown"]) conn.videoOrientation = AVCaptureVideoOrientationPortraitUpsideDown;
+    }
+}
+
+// NEW: Internal Zoom Logic
+- (void)setZoomInternal:(CGFloat)zoomFactor {
+    if (!_currentInput) return;
+    AVCaptureDevice *device = _currentInput.device;
+    NSError *error = nil;
+    if ([device lockForConfiguration:&error]) {
+        CGFloat maxZoom = device.activeFormat.videoMaxZoomFactor;
+        // Clamp the zoom factor to prevent crashes
+        CGFloat minZoom = 1.0;
+        CGFloat safeZoom = MAX(minZoom, MIN(zoomFactor, maxZoom));
+        device.videoZoomFactor = safeZoom;
+        _currentZoom = safeZoom;
+        [device unlockForConfiguration];
     }
 }
 
@@ -179,6 +204,11 @@ RCT_EXPORT_METHOD(setOrientation:(NSString *)orientation) {
             device.activeFormat = bestFormat;
             device.activeVideoMinFrameDuration = CMTimeMake(1, 60);
             device.activeVideoMaxFrameDuration = CMTimeMake(1, 60);
+            
+            // Re-apply zoom setting when switching lenses to avoid resetting to 1.0 abruptly
+            CGFloat maxZoom = device.activeFormat.videoMaxZoomFactor;
+            device.videoZoomFactor = MAX(1.0, MIN(self->_currentZoom, maxZoom));
+            
             [device unlockForConfiguration];
         }
     } else {
@@ -210,7 +240,6 @@ RCT_EXPORT_METHOD(setOrientation:(NSString *)orientation) {
     if (_inputStream) { [_inputStream close]; _inputStream = nil; }
 }
 
-// NEW: The "Ear" of the application
 - (void)listenForCommands {
     uint8_t buffer[1];
     while (_isStreaming && _inputStream && [_inputStream streamStatus] == NSStreamStatusOpen) {
@@ -223,6 +252,8 @@ RCT_EXPORT_METHOD(setOrientation:(NSString *)orientation) {
                     if (command == 'W') [self switchLensInternal:@"wide"];
                     if (command == 'U') [self switchLensInternal:@"ultra"];
                     if (command == 'R') [self rotateNext];
+                    if (command == '+') [self setZoomInternal:self->_currentZoom + 0.1]; // NEW: Incremental Zoom In
+                    if (command == '-') [self setZoomInternal:self->_currentZoom - 0.1]; // NEW: Incremental Zoom Out
                 });
             }
         } else {

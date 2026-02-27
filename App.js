@@ -18,6 +18,7 @@ export default function App() {
   // UI State for Active Controls
   const [lens, setLens] = useState('wide'); // 'wide' or 'ultra'
   const [rotationIdx, setRotationIdx] = useState(0);
+  const [zoom, setZoom] = useState(1.0); // NEW: State for current zoom
 
   useEffect(() => {
     if (!permission) requestPermission();
@@ -68,6 +69,7 @@ export default function App() {
     // Apply Default Settings immediately
     VisionStreamModule.setLens(lens);
     VisionStreamModule.setOrientation(ROTATIONS[rotationIdx]);
+    VisionStreamModule.setZoom(zoom); // NEW: Apply current zoom on start
   };
 
   const stopStream = () => {
@@ -79,13 +81,30 @@ export default function App() {
 
   const toggleLens = (type) => {
     setLens(type);
-    if (streaming) VisionStreamModule.setLens(type);
+    // Reset zoom when switching lenses to avoid unexpected hardware behavior
+    setZoom(1.0);
+    if (streaming) {
+      VisionStreamModule.setLens(type);
+      VisionStreamModule.setZoom(1.0);
+    }
   };
 
   const cycleRotation = () => {
     const nextIdx = (rotationIdx + 1) % 4;
     setRotationIdx(nextIdx);
     if (streaming) VisionStreamModule.setOrientation(ROTATIONS[nextIdx]);
+  };
+
+  // NEW: Zoom handlers
+  const adjustZoom = (amount) => {
+    setZoom((prevZoom) => {
+      // Clamp zoom between 1.0 and 10.0 (or typical max digital zoom)
+      let newZoom = Math.max(1.0, Math.min(prevZoom + amount, 10.0));
+      // Fix floating point precision issues (e.g. 1.1 + 0.1 = 1.2000000000000002)
+      newZoom = parseFloat(newZoom.toFixed(1));
+      if (streaming) VisionStreamModule.setZoom(newZoom);
+      return newZoom;
+    });
   };
 
   if (!permission || !permission.granted) {
@@ -115,7 +134,7 @@ export default function App() {
         <View style={[styles.container, {backgroundColor: '#000'}]}>
           <Text style={styles.activeText}>STREAM ACTIVE</Text>
           <Text style={styles.ipText}>{serverInfo.ip}:{serverInfo.port}</Text>
-          <Text style={styles.infoText}>{lens.toUpperCase()} LENS | {ROTATIONS[rotationIdx].toUpperCase()}</Text>
+          <Text style={styles.infoText}>{lens.toUpperCase()} LENS | {ROTATIONS[rotationIdx].toUpperCase()} | {zoom.toFixed(1)}x ZOOM</Text>
           
           <View style={styles.pulseContainer}>
             <View style={styles.pulse} />
@@ -154,6 +173,17 @@ export default function App() {
                   style={[styles.lensBtn, lens === 'ultra' && styles.lensBtnActive]} 
                   onPress={() => toggleLens('ultra')}>
                   <Text style={[styles.lensText, lens === 'ultra' && styles.lensTextActive]}>0.5x</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* NEW: Zoom Controls Row */}
+              <View style={styles.zoomRow}>
+                <TouchableOpacity style={styles.zoomBtn} onPress={() => adjustZoom(-0.1)}>
+                  <Text style={styles.zoomBtnText}>-</Text>
+                </TouchableOpacity>
+                <Text style={styles.zoomDisplay}>{zoom.toFixed(1)}x</Text>
+                <TouchableOpacity style={styles.zoomBtn} onPress={() => adjustZoom(0.1)}>
+                  <Text style={styles.zoomBtnText}>+</Text>
                 </TouchableOpacity>
               </View>
 
@@ -198,6 +228,12 @@ const styles = StyleSheet.create({
   lensText: { color: '#AAA', fontWeight: 'bold' },
   lensTextActive: { color: '#000' },
   
+  // NEW: Zoom styles
+  zoomRow: { flexDirection: 'row', alignItems: 'center', gap: 20, marginBottom: 10, backgroundColor: '#222', paddingHorizontal: 20, paddingVertical: 5, borderRadius: 25, borderWidth: 1, borderColor: '#444' },
+  zoomBtn: { width: 40, height: 40, justifyContent: 'center', alignItems: 'center' },
+  zoomBtnText: { color: '#00FF00', fontSize: 24, fontWeight: 'bold' },
+  zoomDisplay: { color: '#FFF', fontSize: 16, fontWeight: 'bold', width: 40, textAlign: 'center' },
+
   rotateBtn: { width: '100%', backgroundColor: '#222', padding: 15, borderRadius: 8, alignItems: 'center', marginBottom: 10, borderWidth: 1, borderColor: '#444' },
   stopBtn: { width: '100%', backgroundColor: 'rgba(255, 0, 0, 0.3)', borderColor: '#FF0000', borderWidth: 1, paddingVertical: 15, borderRadius: 8, alignItems: 'center' },
   btnText: { color: '#FF0000', fontWeight: 'bold', letterSpacing: 1 },
